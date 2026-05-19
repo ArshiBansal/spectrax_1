@@ -1,5 +1,12 @@
 import * as mpPose from '@mediapipe/pose';
 import * as drawingUtils from '@mediapipe/drawing_utils';
+import type { Results } from '@mediapipe/pose';
+
+// MediaPipe's npm packages are not ESM-compatible. We use globals from the CDN scripts.
+const POSE_CONNECTIONS = (window as any).POSE_CONNECTIONS;
+const drawConnectors = (window as any).drawConnectors;
+const drawLandmarks = (window as any).drawLandmarks;
+
 
 /**
  * overlayRenderer.ts (Updated for Multi-Exercise)
@@ -65,12 +72,12 @@ export class OverlayRenderer {
     // 3. Draw Landmarks with dynamic size/glow
    drawingUtils.drawLandmarks(this.ctx, results.poseLandmarks, {
       color: '#ffffff',
-      fillColor: (data) => {
+      fillColor: (data: any) => {
           // Highlight primary joints with stronger color
           return primaryJoints.includes(data.index!) ? color : 'rgba(255,255,255,0.5)';
       },
       lineWidth: 1,
-      radius: (data) => {
+      radius: (data: any) => {
         return primaryJoints.includes(data.index!) ? 6 : 2;
       }
     });
