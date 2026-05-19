@@ -131,7 +131,7 @@ export async function getUnsyncedWorkouts(
     const tx = db.transaction(WORKOUTS_STORE, "readonly");
     const store = tx.objectStore(WORKOUTS_STORE);
     const index = store.index("synced");
-    const req = index.getAll(false);
+    const req = index.getAll(IDBKeyRange.only(0));
 
     req.onsuccess = () => {
       const allUnsynced = req.result as WorkoutRecord[];
@@ -300,7 +300,7 @@ export async function syncWorkoutsToFirestore(userId: string): Promise<number> {
       try {
         await uploadWorkoutToFirestore(workout);
         if (workout.id) {
-          await markWorkoutAsSynced(workout.id);
+          await markWorkoutAsSynced(Number(workout.id));
           syncedCount++;
         }
       } catch (error) {

@@ -12,6 +12,11 @@ import { useTheme } from "./context/ThemeContext";
 import HistoryPage from "./HistoryPage";
 import { SummaryScreenSkeleton } from "./components/SummaryScreenSkeleton";
 import { useBadges } from "./hooks/useBadges";
+import { useAuth } from "./hooks/useAuth";
+import { LoginScreen } from "./components/LoginScreen";
+import { SignUpScreen } from "./components/SignUpScreen";
+import { ForgotPasswordScreen } from "./components/ForgotPasswordScreen";
+
 
 type Screen =
   | "welcome"
@@ -20,7 +25,10 @@ type Screen =
   | "summary"
   | "replay"
   | "history"
-  | "trophy";
+  | "trophy"
+  | "login"
+  | "signup"
+  | "forgot-password";
 
 interface WorkoutStats {
   reps: number;
@@ -36,6 +44,8 @@ interface WorkoutStats {
 }
 
 function App() {
+  const { user, loading: authLoading } = useAuth();
+
   const { theme, toggleTheme } = useTheme();
   const [currentScreen, setCurrentScreen] = useState<Screen>("welcome");
   const [selectedExercise, setSelectedExercise] = useState<ExerciseConfig>(
@@ -104,8 +114,11 @@ function App() {
     }
   };
 
+  // Skip auth gate when Firebase is not configured (no .env)
+  const firebaseConfigured = !!import.meta.env.VITE_FIREBASE_API_KEY;
+
   // Show loading state while auth is being checked
-  if (authLoading) {
+  if (firebaseConfigured && authLoading) {
     return (
       <div className="loading-container">
         <div className="spinner"></div>
@@ -114,8 +127,8 @@ function App() {
     );
   }
 
-  // If not authenticated, show auth screens
-  if (!user) {
+  // If not authenticated and Firebase is configured, show auth screens
+  if (firebaseConfigured && !user) {
     return (
       <main className="spectrax-app">
         {currentScreen === "login" && (
