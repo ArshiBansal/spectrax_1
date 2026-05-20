@@ -1,5 +1,7 @@
 import type { Pose as PoseType, Results } from '@mediapipe/pose';
 
+// Read the runtime constructor from `window` instead of importing `Pose` as a value
+// from `@mediapipe/pose`, because the global script path is the Vite/ESM-safe option.
 const Pose = (window as any).Pose as typeof PoseType;
 
 
