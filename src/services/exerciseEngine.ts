@@ -418,7 +418,6 @@ export class ExerciseEngine {
       };
     }
 
-
 // ───────── REP LOGIC ─────────
     let nextStage = stage;
     let nextReps = reps;

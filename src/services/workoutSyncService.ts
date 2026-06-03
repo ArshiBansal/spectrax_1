@@ -186,12 +186,12 @@ async function markWorkoutAsSynced(localId: number, firestoreId: string): Promis
       if (workout) {
         store.delete(localId);
 
-        store.put({
-          ...workout,
-          id: firestoreId,
-          synced: true,
-        });
-      }
+  store.put({
+    ...workout,
+    id: firestoreId,
+    synced: true,
+  });
+}
     };
 
     // resolve only after transaction completes safely
@@ -447,10 +447,14 @@ let offlineHandler: (() => void) | null = null;
 
 export function initializeAutoSync(userId: string): void {
   onlineHandler = async () => {
-    if (syncInProgress) return;
-    syncInProgress = true;
+    console.log("Network connection restored. Starting workout sync...");
     try {
-      await syncWorkoutsToFirestore(userId);
+      if (!syncInProgress) {
+        syncInProgress = true;
+        await fullSyncWorkouts(userId);
+        syncInProgress = false;
+        console.log("Workout sync completed");
+      }
     } catch (error) {
       console.error("Auto-sync failed:", error);
     } finally {

@@ -151,7 +151,6 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
               AI-Powered Fitness
             </div>
 
-
             <h1 className="welcome-wordmark">SPECTRAX</h1>
 
             <p className="welcome-tagline">
