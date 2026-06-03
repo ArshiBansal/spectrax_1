@@ -4,6 +4,7 @@ import { getSavedUserWeight, saveUserWeight } from "../utils/calorieEstimator";
 import "../styles/WelcomeScreen.css";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useTheme } from "../context/ThemeContext";
+import { debounce } from "../utils/debounce";
 
 const STATS = [
   { value: "30+", label: "FPS tracking" },

@@ -7,7 +7,7 @@ import { getJointAngles, getJointVisibility } from '../services/angleUtils';
 import { getPostureErrorCategories } from '../engine/feedbackEngine';
 import { exerciseEngine, EngineState } from '../services/exerciseEngine';
 import { ExerciseConfig } from '../config/exercises';
-import { sessionRecorder } from '../services/sessionRecorder';
+import { sessionRecorder, type FrameData } from '../services/sessionRecorder';
 import { skeletalSense } from '../services/skeletalSense'; // Kept on main thread for reliable auto-detect
 import { poseLockService } from '../services/poseLockService';
 import { clipEngine } from '../services/clipEngine';
@@ -20,12 +20,12 @@ import { useOffscreenCanvas } from '../hooks/useOffscreenCanvas';
 import { FocusPanel, TimerPanel, RepsPanel, EnginePanel, SensePanel } from './WorkoutPanels';
 import { CameraErrorBoundary } from './CameraErrorBoundary';
 import { ghostService, type GhostStats } from '../services/ghostService';
-import type { FrameData } from '../services/sessionRecorder';
-import { cameraService } from "../services/cameraService";
-import { poseService } from "../services/poseService";
-import { gestureService, GestureCommand } from "../services/gestureService";
-import { debounce } from "../utils/debounce";
-import { useThrottleLevel } from "../services/performanceThrottleService";
+import { FpsMonitor } from './FpsMonitor';
+import { CameraErrorBoundary } from './CameraErrorBoundary';
+import { gestureService, GestureCommand } from '../services/gestureService';
+import { debounce } from '../utils/debounce';
+import { useThrottleLevel } from '../services/performanceThrottleService';
+
 // ── Web Worker (Vite native worker bundling) ──────────────────────────────────
 const createPoseWorker = () =>
   new Worker(new URL("../workers/poseWorker.ts", import.meta.url), {
@@ -190,7 +190,6 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   const [vlmProgress, setVlmProgress] = useState(0);
   const [clipResult, setClipResult] = useState<any>(null);
   const { isOnline } = useWorkoutSync();
-const FPS_LIMIT = 30;
 
 const srOnly: React.CSSProperties = {
   position: 'absolute',
