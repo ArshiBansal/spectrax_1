@@ -23,8 +23,8 @@ import type { GhostStats } from '../services/ghostService';
 import { useThrottleLevel } from '../services/performanceThrottleService';
 import { FpsMonitor } from './FpsMonitor';
 import { CameraErrorBoundary } from './CameraErrorBoundary';
-import { gestureService, GestureCommand } from '../services/gestureService';
-import { debounce } from '../utils/debounce';
+import { cameraService } from "../services/cameraService";
+import { poseService } from "../services/poseService";
 
 // ── Web Worker (Vite native worker bundling) ──────────────────────────────────
 const createPoseWorker = () =>
