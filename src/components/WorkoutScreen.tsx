@@ -192,7 +192,6 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   const [vlmProgress, setVlmProgress] = useState(0);
   const [clipResult, setClipResult] = useState<any>(null);
   const { isOnline } = useWorkoutSync();
-  const throttleLevel = useThrottleLevel();
   const srOnly: React.CSSProperties = {
     position: 'absolute',
     width: '1px',
@@ -565,6 +564,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   useEffect(() => {
     isMountedRef.current = true;
     startTimeRef.current = Date.now();
+    exerciseEngine.reset();
 
     // Load Ghost Data
     const ghostData = ghostService.loadGhost(exercise.key);
@@ -577,12 +577,16 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       ghostStatsRef.current = null;
       setHasGhost(false);
     }
-
-    // ── WebSocket connection to backend (optional, non-blocking) ─────────────
-
     // ── Spawn Web Worker ──────────────────────────────────────────────────────
     const worker = createPoseWorker();
     workerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent) => {
+      const { angles } = event.data;
+      if (angles) {
+        workerAnglesRef.current = angles;
+      }
+    };
 
     
   
@@ -625,6 +629,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       worker.terminate();
       clearInterval(timerRef);
       gestureService.reset();
+      exerciseEngine.reset();
       if (gestureHudTimerRef.current) clearTimeout(gestureHudTimerRef.current);
     };
   }, [exercise, startSystem, stopSystem]);
