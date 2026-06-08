@@ -18,6 +18,7 @@ import { ForgotPasswordScreen } from "./components/ForgotPasswordScreen";
 import { ScrollToTopButton } from "./components/ScrollToTopButton";
 import { useBadges } from "./hooks/useBadges";
 import { throttleMonitor } from './services/performanceThrottleService';
+import PrivacyPage from "./pages/PrivacyPage";
 
 // Start monitoring throttling immediately
 throttleMonitor.start();
