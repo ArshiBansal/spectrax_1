@@ -553,7 +553,7 @@ export class ExerciseEngine {
       nextJumpingJackSync = nextCustomState.jumpingJackSync;
     }
 
-    let tut: ReturnType<KinematicEngine['getLastRepTUT']> | undefined;
+    let tut: any = undefined;
     if (repJustCounted) {
       this.kinematicEngine.onRepComplete();
 
