@@ -241,6 +241,10 @@ export class ExerciseEngine {
   private kinematicEngine = new KinematicEngine();
   private readonly MIN_DOWN_DURATION = 150;
 
+  public reset(): void {
+    this.kinematicEngine = new KinematicEngine();
+  }
+
   private repParams(): RepParams {
     return {
       repCooldown: this.BASE_REP_COOLDOWN,
@@ -553,11 +557,12 @@ export class ExerciseEngine {
       nextJumpingJackSync = nextCustomState.jumpingJackSync;
     }
 
+    let tut: any = undefined;
     if (repJustCounted) {
       this.kinematicEngine.onRepComplete();
 
       // ── TUT Metrics for the completed rep ──────────────────────────────
-      const tut = this.kinematicEngine.getLastRepTUT();
+      tut = this.kinematicEngine.getLastRepTUT();
 
       // ── Classify depth for the completed rep ─────────────────────────────
       let depthScoreModifier = 0;
