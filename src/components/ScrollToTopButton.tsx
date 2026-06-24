@@ -6,6 +6,7 @@ const SCROLL_THRESHOLD = 320;
 export const ScrollToTopButton: React.FC = () => {
   const [isVisible, setIsVisible] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState(0);
   const activeScrollElementRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -78,8 +79,9 @@ export const ScrollToTopButton: React.FC = () => {
   return (
     <button
       type="button"
-      className="scroll-to-top-button fixed bottom-8 right-8 z-50 flex items-center justify-center rounded-full bg-background shadow-lg hover:bg-accent hover:text-accent-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+      className="scroll-to-top-button has-tooltip tooltip-left fixed bottom-8 right-8 z-50 flex items-center justify-center rounded-full bg-background shadow-lg hover:bg-accent hover:text-accent-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
       onClick={handleClick}
+      data-tooltip="Scroll to top"
       aria-label="Scroll to top"
       style={{ width: `${size}px`, height: `${size}px` }}
     >
