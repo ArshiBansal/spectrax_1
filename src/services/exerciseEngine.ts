@@ -14,7 +14,8 @@
  */
 
 import { ExerciseConfig } from '../config/exercises';
-import { getFeedback, resetFeedbackEngine, FeedbackResult } from '../engine/feedbackEngine';
+import { getFeedback, getNeuralFeedback, resetFeedbackEngine, FeedbackResult } from '../engine/feedbackEngine';
+import { neuralFormEngine } from './neuralFormEngine';
 // Note: feedbackEngine.ts lives in src/engine/ — path is correct relative to src/services/
 import {
   initialSquatDepthStats,
@@ -241,9 +242,7 @@ export class ExerciseEngine {
   private kinematicEngine = new KinematicEngine();
   private readonly MIN_DOWN_DURATION = 150;
 
-  public reset(): void {
-    this.kinematicEngine = new KinematicEngine();
-  }
+
 
   private repParams(): RepParams {
     return {
@@ -479,7 +478,43 @@ export class ExerciseEngine {
     let frameScore: number;
 
     if (isInExercisePosture) {
-      feedbackResult = getFeedback(context, config.key);
+      const useNeural = neuralFormEngine.isCalibrated(config.key);
+
+      if (useNeural) {
+        const neuralFeatures = neuralFormEngine.extractFeatures({
+          landmarks: landmarks || [],
+          angles: activeAngles,
+          bodyType: bodyType || 'scanning',
+          exerciseKey: config.key,
+          stage: nextStage,
+          repCount: currentState.totalReps,
+          repScores: currentState.repScores,
+          adaptiveFactor: bodyType === 'ecto' ? 1.05 : bodyType === 'endo' ? 0.95 : 1.0,
+          downAngleReached,
+          wristSupinationScore,
+        });
+        const prediction = neuralFormEngine.predict(neuralFeatures);
+        feedbackResult = getNeuralFeedback(prediction, config.key);
+      } else {
+        feedbackResult = getFeedback(context, config.key);
+
+        if (landmarks && currentState.totalReps < 10) {
+          const neuralFeatures = neuralFormEngine.extractFeatures({
+            landmarks,
+            angles: activeAngles,
+            bodyType: bodyType || 'scanning',
+            exerciseKey: config.key,
+            stage: nextStage,
+            repCount: currentState.totalReps,
+            repScores: currentState.repScores,
+            adaptiveFactor: bodyType === 'ecto' ? 1.05 : bodyType === 'endo' ? 0.95 : 1.0,
+            downAngleReached,
+            wristSupinationScore,
+          });
+          neuralFormEngine.addTrainingSample(config.key, neuralFeatures, feedbackResult);
+        }
+      }
+
       frameScore = feedbackResult.score;
     } else {
       feedbackResult = {
@@ -560,6 +595,10 @@ export class ExerciseEngine {
     let tut: any = undefined;
     if (repJustCounted) {
       this.kinematicEngine.onRepComplete();
+
+      if (nextTotalReps === 10) {
+        neuralFormEngine.calibrate(config.key).catch(console.error);
+      }
 
       // ── TUT Metrics for the completed rep ──────────────────────────────
       tut = this.kinematicEngine.getLastRepTUT();
@@ -707,6 +746,10 @@ export class ExerciseEngine {
 
       wristSupinationScore,
     };
+  }
+
+  reset(): void {
+    this.kinematicEngine.reset();
   }
 }
 

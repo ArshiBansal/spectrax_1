@@ -17,15 +17,17 @@ import { useWorkoutSync } from '../hooks/useWorkoutSync';
 import { useDisplayConfig } from '../hooks/useDisplayConfig';
 import { useWorkoutWebSocket } from '../hooks/useWorkoutWebSocket';
 import { useOffscreenCanvas } from '../hooks/useOffscreenCanvas';
-import { FocusPanel, TimerPanel, RepsPanel, EnginePanel, SensePanel, AngleDialPanel, TutPanel } from './WorkoutPanels';
+import { injuryRiskEngine } from '../services/injuryRiskEngine';
+import { FocusPanel, TimerPanel, RepsPanel, EnginePanel, SensePanel, AngleDialPanel, RiskPanel, TutPanel } from './WorkoutPanels';
 import { ghostService } from '../services/ghostService';
 import type { GhostStats } from '../services/ghostService';
-import { useThrottleLevel } from '../services/performanceThrottleService';
-import { FpsMonitor } from './FpsMonitor';
-import { CameraErrorBoundary } from './CameraErrorBoundary';
+import { DepthEstimationEngine } from '../services/depthEstimationEngine';
+import { reconstruct3DMesh } from '../services/mesh3DEngine';
 import { gestureService, GestureCommand } from '../services/gestureService';
-import { debounce } from '../utils/debounce';
+import { CameraErrorBoundary } from './CameraErrorBoundary';
 import { useSettings } from '../context/SettingsContext';
+import { useAuth } from '../context/AuthContext';
+import { neuralFormEngine } from '../services/neuralFormEngine';
 
 // ── Web Worker (Vite native worker bundling) ──────────────────────────────────
 const createPoseWorker = () =>
@@ -35,6 +37,7 @@ const createPoseWorker = () =>
 
 interface WorkoutScreenProps {
   exercise: ExerciseConfig;
+  onCancel?: () => void;
   onEnd: (stats: {
     reps: number;
     totalReps: number;
@@ -52,11 +55,9 @@ interface WorkoutScreenProps {
   onAutoDetect?: (key: string) => void;
   bodyType?: BodyType;
   adaptiveFactor?: number;
-  onSnapshotUpdate?: (liveStats: any) => void;
-  onCancel?: () => void;
 }
 
-type WorkoutPanelId = "focus" | "timer" | "reps" | "engine" | "sense" | "dial" | "tut";
+type WorkoutPanelId = "focus" | "timer" | "reps" | "engine" | "sense" | "dial" | "risk" | "tut";
 
 type PanelPosition = {
   x: number;
@@ -82,6 +83,7 @@ const getDefaultPanelPositions = (): PanelPositions => {
     engine: { x: 40, y: Math.max(height - 110, 30) },
     sense: { x: 280, y: Math.max(height - 110, 30) },
     dial: { x: Math.max(width - 230, 30), y: 150 },
+    risk: { x: Math.max(width - 230, 30), y: 290 },
     tut: { x: Math.max(width - 230, 30), y: 300 },
   };
 };
@@ -111,55 +113,6 @@ const getStoredPanelPositions = (): PanelPositions => {
   } catch {
     return defaults;
   }
-};
-
-const srOnly: React.CSSProperties = {
-  position: "absolute",
-  width: "1px",
-  height: "1px",
-  padding: 0,
-  margin: "-1px",
-  overflow: "hidden",
-  clip: "rect(0, 0, 0, 0)",
-  whiteSpace: "nowrap",
-  border: "0",
-};
-
-const MAX_EXTRAPOLATED_FRAMES = 5;
-
-type PoseLandmark = {
-  x: number;
-  y: number;
-  z: number;
-  visibility: number;
-};
-
-const cloneLandmarks = (landmarks: PoseLandmark[]) =>
-  landmarks.map((landmark) => ({ ...landmark }));
-
-const extrapolateLandmarks = (
-  latest: PoseLandmark[] | null,
-  previous: PoseLandmark[] | null,
-  dropoutFrames: number,
-): PoseLandmark[] | null => {
-  if (!latest || !previous) return null;
-
-  const step = dropoutFrames + 1;
-  if (step > MAX_EXTRAPOLATED_FRAMES) return null;
-
-  return latest.map((landmark, index) => {
-    const prior = previous[index] ?? landmark;
-    const dx = landmark.x - prior.x;
-    const dy = landmark.y - prior.y;
-    const dz = landmark.z - prior.z;
-
-    return {
-      x: Math.min(Math.max(landmark.x + dx * step, 0), 1),
-      y: Math.min(Math.max(landmark.y + dy * step, 0), 1),
-      z: landmark.z + dz * step,
-      visibility: Math.max(0.5, Math.min(landmark.visibility, 1)),
-    };
-  });
 };
 
 const getProgressiveSpeech = (rawMsg: string, durationMs: number): string => {
@@ -214,8 +167,9 @@ const getProgressiveSpeech = (rawMsg: string, durationMs: number): string => {
   }
 };
 
-export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, onAutoDetect, bodyType, onCancel }) => {
+export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, onAutoDetect, bodyType }) => {
   const { settings, updateSetting } = useSettings();
+  const { user } = useAuth();
   const voiceFeedbackEnabled = settings.voiceFeedback;
   const lastSpokenFeedbackRef = useRef<string>("");
   const lastSpokenTimeRef = useRef<number>(0);
@@ -242,6 +196,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       engine: React.createRef<HTMLDivElement>(),
       sense: React.createRef<HTMLDivElement>(),
       dial: React.createRef<HTMLDivElement>(),
+      risk: React.createRef<HTMLDivElement>(),
       tut: React.createRef<HTMLDivElement>()
     };
   }
@@ -250,13 +205,19 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   const [panelsLocked, setPanelsLocked] = useState(true);
   const [currentAngle, setCurrentAngle] = useState(0);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [riskMetrics, setRiskMetrics] = useState({
+    riskIndex: 0,
+    fatigueIndex: 0,
+    asymmetryScore: 0,
+    recommendedStopRep: null as number | null,
+  });
   const [panelPositions, setPanelPositions] = useState<PanelPositions>(() => getStoredPanelPositions());
   const [showExitModal, setShowExitModal] = useState(false);
+  const [depth3DEnabled, setDepth3DEnabled] = useState(false);
   const { config: displayConfig, updateConfig: updateDisplayConfig } = useDisplayConfig();
   const [seconds, setSeconds] = useState(0);
   const [vlmProgress, setVlmProgress] = useState(0);
   const [clipResult, setClipResult] = useState<any>(null);
-  const { isOnline } = useWorkoutSync();
   const srOnly: React.CSSProperties = {
     position: 'absolute',
     width: '1px',
@@ -268,7 +229,6 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
     whiteSpace: 'nowrap',
     borderWidth: 0,
   };
-  const throttleLevel = useThrottleLevel();
 
   const [engineState, setEngineState] = useState<EngineState>({
     reps: 0,
@@ -305,11 +265,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   const frameSkipRef = useRef<number>(0); // frame-skip counter
   const workerRef = useRef<Worker | null>(null); // pose worker
   const pendingLandmarksRef = useRef<any>(null); // latest landmarks for worker
-  const lastObservedLandmarksRef = useRef<any[] | null>(null);
-  const previousObservedLandmarksRef = useRef<any[] | null>(null);
-  const dropoutFrameCountRef = useRef(0);
   const [mismatchError, setMismatchError] = useState<string | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
 
   const [gestureConfidences, setGestureConfidences] = useState<Record<string, number>>({});
   const [lastGestureCommand, setLastGestureCommand] = useState<GestureCommand | null>(null);
@@ -335,7 +291,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       };
       return nextPositions;
     }, {} as PanelPositions);
-  }, []);
+  }, [panelRefsById]);
 
 
   useEffect(() => {
@@ -569,7 +525,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
         lastMotivationTimeRef.current = now;
       }
     }
-  }, [engineState.feedback, engineState.reps, engineState.stage, voiceFeedbackEnabled, mismatchError]);
+  }, [engineState.feedback, engineState.reps, engineState.stage, engineState.lastRepTime, engineState.stageStartTime, engineState.status, voiceFeedbackEnabled, mismatchError]);
 
   // ── Announce exercise mismatch errors ─────────────────────────────────────────
   // role="alert" with aria-live="assertive" will interrupt the screen reader
@@ -587,10 +543,73 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   useWorkoutWebSocket();
 
 
+  const depthEngineRef = useRef<DepthEstimationEngine | null>(null);
+  const lastDepthMapRef = useRef<any>(null);
+  const endSessionRef = useRef<() => Promise<number | null>>();
+
+  const handleEnd = useCallback(async () => {
+    await endSessionRef.current?.();
+
+    const accuracy =
+      mutableState.current.totalReps > 0
+        ? Math.round(
+            (mutableState.current.correctReps /
+              mutableState.current.totalReps) *
+              100,
+          )
+        : 100;
+
+    const archive = sessionRecorder.getArchive();
+    ghostService.saveBestGhost(exercise.key, {
+      reps: mutableState.current.reps,
+      accuracy: accuracy,
+      totalReps: mutableState.current.totalReps
+    }, archive);
+
+    sessionRecorder.download();
+
+    const gmmCategories = getPostureErrorCategories();
+    const finalMistakes = { ...mutableState.current.mistakes };
+    for (const [cat, count] of Object.entries(gmmCategories)) {
+      if (count > 0) {
+        finalMistakes[cat] = (finalMistakes[cat] || 0) + count;
+      }
+    }
+
+    onEnd({
+      reps: mutableState.current.reps,
+      totalReps: mutableState.current.totalReps,
+      correctReps: mutableState.current.correctReps,
+      repScores: mutableState.current.repScores,
+      repDeviations: mutableState.current.repDeviations,
+      duration: seconds,
+      accuracy: accuracy,
+      mistakes: finalMistakes,
+      bestStreak: mutableState.current.bestStreak,
+      jumpingJackSync: mutableState.current.jumpingJackSync,
+      tutMetrics: mutableState.current.tutMetrics,
+      tags: clipEngine.generateSessionTags({
+        accuracy: accuracy,
+        avgConfidence: clipResult?.confidence || 0.8,
+        mistakes: Object.keys(finalMistakes),
+        duration: seconds,
+      }),
+    });
+  }, [exercise.key, onEnd, seconds, clipResult]);
+
   const handlePoseResults = useCallback(async (results: any) => {
     // ── SINGLE USER LOCK: Filter out erratic detections or second people ──
     const filteredResults = poseLockService.filter(results);
     if (!filteredResults || !filteredResults.poseLandmarks) return;
+
+    if (depth3DEnabled && videoRef.current && depthEngineRef.current) {
+      const video = videoRef.current;
+      depthEngineRef.current.processFrame(video, (depthResult) => {
+        if (depthResult) {
+          lastDepthMapRef.current = depthResult;
+        }
+      });
+    }
 
     // Calculate primary joint angle on every frame for real-time dial updates
     const currentFrameAngles = getJointAngles(results.poseLandmarks);
@@ -732,19 +751,53 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
     mutableState.current = nextState;
     setEngineState(nextState);
 
+    let riskSnapshot: ReturnType<typeof injuryRiskEngine.computeRisk> | undefined;
+    if (nextState.vbtMetrics) {
+      riskSnapshot = injuryRiskEngine.computeRisk(nextState.vbtMetrics, nextState.reps);
+      setRiskMetrics({
+        riskIndex: riskSnapshot.riskIndex,
+        fatigueIndex: riskSnapshot.fatigueIndex,
+        asymmetryScore: riskSnapshot.asymmetryScore,
+        recommendedStopRep: riskSnapshot.recommendedStopRep,
+      });
+      sessionRecorder.recordRisk({
+        timestamp: Date.now(),
+        riskIndex: riskSnapshot.riskIndex,
+        fatigueIndex: riskSnapshot.fatigueIndex,
+        asymmetryScore: riskSnapshot.asymmetryScore,
+      });
+    }
+
     sessionRecorder.recordFrame({
       timestamp: Date.now(),
       landmarks: results.poseLandmarks,
       angles,
       feedback: nextState.feedback,
       exercise: exercise.key,
+      riskScore: riskSnapshot?.riskIndex,
+      fatigueIndex: riskSnapshot?.fatigueIndex,
+      asymmetryScore: riskSnapshot?.asymmetryScore,
     });
 
     // 5. Rendering (Main thread fallback if OffscreenCanvas disabled)
     if (!offscreenEnabledRef.current) {
+      if (depth3DEnabled && lastDepthMapRef.current && videoRef.current) {
+        const video = videoRef.current;
+        const { meshVertices } = reconstruct3DMesh(
+          results.poseLandmarks,
+          lastDepthMapRef.current,
+          video.videoWidth || 1280,
+          video.videoHeight || 720
+        );
+        overlayRenderer.setMeshVertices(meshVertices);
+        overlayRenderer.set3DEnabled(true);
+      } else {
+        overlayRenderer.set3DEnabled(false);
+        overlayRenderer.setMeshVertices(null);
+      }
       overlayRenderer.draw(results, nextState.status, primaryJoints);
     }
-  }, [exercise]);
+  }, [exercise, depth3DEnabled, handleEnd]);
 
   const handleFrameTick = useCallback((count: number) => {
     setVlmProgress(clipEngine.getProgress());
@@ -756,6 +809,12 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       });
     }
   }, [videoRef]);
+
+  const {
+    startSession,
+    endSession,
+  } = useWorkoutSync();
+  endSessionRef.current = endSession;
 
   const {
     startSystem,
@@ -782,6 +841,8 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   useEffect(() => {
     isMountedRef.current = true;
     startTimeRef.current = Date.now();
+    exerciseEngine.reset();
+    injuryRiskEngine.reset();
 
     // Load Ghost Data
     const ghostData = ghostService.loadGhost(exercise.key);
@@ -812,6 +873,10 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       if (!videoRef.current || !canvasRef.current) return;
 
       try {
+        const depthEngine = new DepthEstimationEngine();
+        await depthEngine.init();
+        depthEngineRef.current = depthEngine;
+
         const canvasEl = canvasRef.current as any;
         initOffscreenCanvas(canvasEl, worker);
 
@@ -820,7 +885,9 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
           : null;
         if (ctx) overlayRenderer.setContext(ctx);
 
+        await neuralFormEngine.init(user?.uid);
         sessionRecorder.start();
+        startSession(exercise.key, exercise.name);
         await clipEngine.init();
         await startSystem();
       } catch (err: any) {
@@ -845,11 +912,15 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       isMountedRef.current = false;
       stopSystem();
       worker.terminate();
+      depthEngineRef.current?.destroy();
+      depthEngineRef.current = null;
       clearInterval(timerRef);
       gestureService.reset();
+      exerciseEngine.reset();
+      injuryRiskEngine.reset();
       if (gestureHudTimerRef.current) clearTimeout(gestureHudTimerRef.current);
     };
-  }, [exercise, startSystem, stopSystem]);
+  }, [exercise, startSystem, stopSystem, initOffscreenCanvas, startSession]);
 
   useEffect(() => {
     setPanelPositions((currentPositions) => clampPanelPositions(currentPositions));
@@ -868,54 +939,6 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
   useEffect(() => {
     window.localStorage.setItem(PANEL_POSITION_STORAGE_KEY, JSON.stringify(panelPositions));
   }, [panelPositions]);
-
-  const handleEnd = () => {
-    const accuracy =
-      mutableState.current.totalReps > 0
-        ? Math.round(
-            (mutableState.current.correctReps /
-              mutableState.current.totalReps) *
-              100,
-          )
-        : 100;
-
-    const archive = sessionRecorder.getArchive();
-    ghostService.saveBestGhost(exercise.key, {
-      reps: mutableState.current.reps,
-      accuracy: accuracy,
-      totalReps: mutableState.current.totalReps
-    }, archive);
-
-    sessionRecorder.download();
-
-    const gmmCategories = getPostureErrorCategories();
-    const finalMistakes = { ...mutableState.current.mistakes };
-    for (const [cat, count] of Object.entries(gmmCategories)) {
-      if (count > 0) {
-        finalMistakes[cat] = (finalMistakes[cat] || 0) + count;
-      }
-    }
-
-    onEnd({
-      reps: mutableState.current.reps,
-      totalReps: mutableState.current.totalReps,
-      correctReps: mutableState.current.correctReps,
-      repScores: mutableState.current.repScores,
-      repDeviations: mutableState.current.repDeviations,
-      duration: seconds,
-      accuracy: accuracy,
-      mistakes: finalMistakes,
-      bestStreak: mutableState.current.bestStreak,
-      jumpingJackSync: mutableState.current.jumpingJackSync,
-      tutMetrics: mutableState.current.tutMetrics,
-      tags: clipEngine.generateSessionTags({
-        accuracy: accuracy,
-        avgConfidence: clipResult?.confidence || 0.8,
-        mistakes: Object.keys(finalMistakes),
-        duration: seconds,
-      }),
-    });
-  };
 
   const formatTime = (s: number) => {
     const mins = Math.floor(s / 60)
@@ -1065,6 +1088,68 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
           VLM INTELLIGENCE LOADING... {vlmProgress}% (151MB)
         </div>
       )}
+      {/* Neural Calibration Progress */}
+      {engineState.totalReps < 10 && !neuralFormEngine.isCalibrated(exercise.key) && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '80px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 100,
+            background: 'rgba(0,0,0,0.85)',
+            border: '1px solid var(--neon-cyan)',
+            borderRadius: '12px',
+            padding: '12px 20px',
+            textAlign: 'center',
+            backdropFilter: 'blur(8px)',
+            minWidth: '220px',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '0.7rem',
+              color: 'var(--neon-cyan)',
+              letterSpacing: '2px',
+              fontWeight: 800,
+              marginBottom: '8px',
+            }}
+          >
+            CALIBRATING NEURAL MODEL…
+          </div>
+          <div
+            style={{
+              width: '100%',
+              height: '6px',
+              background: 'rgba(255,255,255,0.1)',
+              borderRadius: '3px',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${Math.min((engineState.totalReps / 10) * 100, 100)}%`,
+                height: '100%',
+                background: 'var(--neon-cyan)',
+                borderRadius: '3px',
+                transition: 'width 0.3s ease',
+                boxShadow: '0 0 10px var(--neon-cyan)',
+              }}
+            />
+          </div>
+          <div
+            style={{
+              fontSize: '0.6rem',
+              color: 'var(--text-dim)',
+              marginTop: '6px',
+              letterSpacing: '1px',
+            }}
+          >
+            {engineState.totalReps} / 10 reps collected
+          </div>
+        </div>
+      )}
+
       {/* Offline Indicator */}
       {!navigator.onLine && (
         <div
@@ -1105,7 +1190,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
       >
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", pointerEvents: "auto" }}>
           <button
-            onClick={() => onCancel && onCancel()}
+            onClick={() => setShowExitModal(true)}
             className="btn-neon"
             aria-label="Exit Workout"
             style={{
@@ -1237,6 +1322,13 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
         >
           {displayConfig.fpsDisplay ? 'Hide FPS' : 'Show FPS'}
         </button>
+
+        <button
+          className={`workout-lock-toggle ${depth3DEnabled ? 'is-locked' : 'is-unlocked'}`}
+          onClick={() => setDepth3DEnabled((prev) => !prev)}
+        >
+          {depth3DEnabled ? '3D Mesh: ON' : '3D Mesh: OFF'}
+        </button>
       </div>
 
       <div className="workout-panel-layer">
@@ -1246,6 +1338,12 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
         {renderDraggablePanel('engine', '', <EnginePanel status={engineState.status} statusColor={statusColor} />)}
         {renderDraggablePanel('sense', '', <SensePanel clipEngine={clipEngine} clipResult={clipResult} />)}
         {renderDraggablePanel('dial', '', <AngleDialPanel angle={currentAngle} label={exercise.primaryJoint} statusColor={statusColor} />)}
+        {renderDraggablePanel('risk', '', <RiskPanel 
+          riskIndex={riskMetrics.riskIndex} 
+          fatigueIndex={riskMetrics.fatigueIndex} 
+          asymmetryScore={riskMetrics.asymmetryScore} 
+          recommendedStopRep={riskMetrics.recommendedStopRep} 
+        />)}
         {renderDraggablePanel('tut', '', <TutPanel tutMetrics={engineState.tutMetrics} statusColor={statusColor} />)}
       </div>
 
@@ -1625,7 +1723,7 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
               </div>
             </div>
 
-            {clipEngine.isReady() || clipEngine.getMode() === "cloud" ? (
+            {clipEngine.isReady() ? (
               <div
                 className="glass animate-in"
                 style={{
@@ -1653,13 +1751,9 @@ export const WorkoutScreen: React.FC<WorkoutScreenProps> = ({ exercise, onEnd, o
                   }}
                 >
                   VLM SENSE:{" "}
-                  {clipEngine.getMode() === "cloud"
-                    ? clipResult
-                      ? `CLOUD: ${clipResult.label.toUpperCase()}`
-                      : "CLOUD ACTIVATING..."
-                    : clipResult
-                      ? clipResult.label.toUpperCase()
-                      : "SCANNING..."}{" "}
+                  {clipResult
+                    ? clipResult.label.toUpperCase()
+                    : "SCANNING..."}{" "}
                   ({clipResult ? Math.round(clipResult.confidence * 100) : 0}%)
                 </div>
               </div>
